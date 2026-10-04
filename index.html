@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Wumpus Parkour</title>
+  <style>
+    :root {
+      --bg1: #101820;
+      --bg2: #172b3e;
+      --ground: #2b6f4b;
+      --platform: #355d4f;
+      --player: #f5d76e;
+      --player-shadow: #d4a52d;
+      --wumpus: #1a1c22;
+      --red: #ff2d2d;
+      --danger: #ff5858;
+      --ui: #dfeefb;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: radial-gradient(circle at top, #1e2d3a 0%, #0f1720 30%, #090c10 100%);
+      font-family: Arial, Helvetica, sans-serif;
+      color: white;
+      overflow: hidden;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    #game-wrap {
+      position: relative;
+      width: min(100vw, 1000px);
+      height: min(95vh, 620px);
+      aspect-ratio: 16 / 9;
+      border: 4px solid rgba(255,255,255,0.18);
+      background: linear-gradient(#87ceeb 0%, #d9f1ff 45%, #95d3ff 100%);
+      box-shadow: 0 25px 50px rgba(0,0,0,0.45);
+      overflow: hidden;
+      image-rendering: pixelated;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
+      background: linear-gradient(#87ceeb 0%, #d9f1ff 45%, #95d3ff 100%);
+    }
+
+    .hud {
+      position: absolute;
+      inset: 12px 12px auto 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: none;
+      z-index: 10;
+      text-shadow: 2px 2px 0 rgba(0,0,0,0.4);
+    }
+
+    .hud .title {
+      font-weight: 700;
+      letter-spacing: 1px;
+      font-size: clamp(12px, 2vw, 22px);
+    }
+
+    .hud .status {
+      font-size: clamp(11px, 1.7vw, 17px);
+      color: #f4f7ff;
+      background: rgba(20, 30, 40, 0.35);
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.18);
+    }
+
+    .mobile-toggle {
+      position: absolute;
+      left: 14px;
+      bottom: 14px;
+      z-index: 25;
+      border: 2px solid rgba(255,255,255,0.5);
+      background: rgba(16, 20, 28, 0.7);
+      color: white;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+      display: none;
+    }
+
+    .touch-controls {
+      position: absolute;
+      inset: 0;
+      z-index: 20;
+      pointer-events: none;
+      display: none;
+    }
+
+    .touch-controls.active { display: block; }
+
+    .touch-btn {
+      position: absolute;
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      border: 2px solid rgba(255,255,255,0.5);
+      background: rgba(18, 25, 30, 0.55);
+      color: white;
+      font-size: 30px;
+      font-weight: 700;
+      display: grid;
+      place-items: center;
+      pointer-events: auto;
+      touch-action: none;
+      user-select: none;
+      box-shadow: inset 0 0 0 2px rgba(255,255,255,0.1);
+    }
+
+    .left { left: 18px; bottom: 18px; }
+    .right { left: 94px; bottom: 18px; }
+    .jump { right: 18px; bottom: 18px; }
+
+    .touch-btn:active { transform: scale(0.96); }
+
+    .hidden { display: none !important; }
+
+    @media (hover: hover) and (pointer: fine) {
+      .mobile-toggle { display: none !important; }
+      .touch-controls { display: none !important; }
+    }
+
+    @media (pointer: coarse) {
+      .mobile-toggle { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <div id="game-wrap">
+    <div class="hud">
+      <div class="title">PARKOUR // WUMPUS</div>
+      <div class="status" id="status">RUN</div>
+    </div>
+
+    <canvas id="game" width="1024" height="576"></canvas>
+
+    <button id="mobileToggle" class="mobile-toggle">MÓVIL</button>
+
+    <div id="touchControls" class="touch-controls" aria-label="Controles táctiles">
+      <div class="touch-btn left" data-key="a">◀</div>
+      <div class="touch-btn right" data-key="d">▶</div>
+      <div class="touch-btn jump" data-key=" ">⤒</div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const mobileToggle = document.getElementById('mobileToggle');
+    const touchControls = document.getElementById('touchControls');
+
+    const WORLD = {
+      width: 2400,
+      height: 576,
+      gravity: 0.75,
+      groundY: 484
+    };
+
+    const keys = { a: false, d: false, space: false };
+    const touchState = { left: false, right: false, jump: false };
+    let mobileMode = false;
+    let gameOver = false;
+    let timer = 0;
+    let endTimer = 0;
+
+    const player = {
+      x: 90,
+      y: WORLD.groundY - 28,
+      w: 26,
+      h: 28,
+      vx: 0,
+      vy: 0,
+      speed: 3.4,
+      jumpForce: 12.5,
+      onGround: false,
+      facing: 1,
+      dead: false,
+      won: false
+    };
+
+    const wumpus = {
+      x: 2020,
+      y: WORLD.groundY - 56,
+      w: 54,
+      h: 56,
+      vx: 0,
+      vy: 0,
+      active: false,
+      visible: false,
+      eyes: 0,
+      stareTimer: 0
+    };
+
+    const platforms = [
+      { x: 0, y: WORLD.groundY, w: 920, h: 92, type: 'ground' },
+      { x: 950, y: WORLD.groundY, w: 250, h: 92, type: 'ground' },
+      { x: 1250, y: WORLD.groundY, w: 320, h: 92, type: 'ground' },
+      { x: 1650, y: WORLD.groundY, w: 650, h: 92, type: 'ground' },
+      { x: 430, y: 380, w: 120, h: 20 },
+      { x: 620, y: 330, w: 120, h: 20 },
+      { x: 820, y: 280, w: 120, h: 20 },
+      { x: 1110, y: 270, w: 160, h: 20 },
+      { x: 1380, y: 330, w: 150, h: 20 },
+      { x: 1750, y: 280, w: 160, h: 20 },
+      { x: 1945, y: 215, w: 140, h: 20 },
+      { x: 2100, y: 180, w: 120, h: 20 }
+    ];
+
+    const clouds = [
+      { x: 140, y: 108, w: 80 },
+      { x: 510, y: 130, w: 96 },
+      { x: 930, y: 120, w: 88 },
+      { x: 1420, y: 100, w: 110 },
+      { x: 1880, y: 130, w: 115 }
+    ];
+
+    const goal = { x: 2280, y: 140, w: 70, h: 110 };
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+    function rectsIntersect(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function updateMovement() {
+      const moveDir = (keys.a || touchState.left ? -1 : 0) + (keys.d || touchState.right ? 1 : 0);
+
+      if (!gameOver) {
+        player.vx = moveDir * player.speed;
+        if (moveDir !== 0) player.facing = moveDir;
+      }
+
+      if ((keys.space || touchState.jump) && player.onGround && !gameOver) {
+        player.vy = -player.jumpForce;
+        player.onGround = false;
+      }
+    }
+
+    function updatePlayer() {
+      if (gameOver) return;
+
+      player.vy += WORLD.gravity;
+      player.x += player.vx;
+      player.y += player.vy;
+
+      player.onGround = false;
+
+      for (const p of platforms) {
+        const prevY = player.y - player.vy;
+        const prevBottom = prevY + player.h;
+        const nextBottom = player.y + player.h;
+
+        if (rectsIntersect(player, p)) {
+          if (player.vy >= 0 && prevBottom <= p.y + 8 && nextBottom >= p.y) {
+            player.y = p.y - player.h;
+            player.vy = 0;
+            player.onGround = true;
+          }
+
+          if (player.vy < 0 && prevY >= p.y + p.h - 8) {
+            player.y = p.y + p.h;
+            player.vy = 0;
+          }
+        }
+      }
+
+      if (player.y + player.h >= WORLD.groundY + 2) {
+        player.y = WORLD.groundY - player.h;
+        player.vy = 0;
+        player.onGround = true;
+      }
+
+      if (player.x < 0) player.x = 0;
+      if (player.x + player.w > WORLD.width) player.x = WORLD.width - player.w;
+
+      if (player.y > WORLD.height + 120) {
+        gameOver = true;
+        setStatus('FALL');
+      }
+
+      if (player.x + player.w > goal.x && player.x < goal.x + goal.w &&
+          player.y + player.h > goal.y && player.y < goal.y + goal.h) {
+        player.won = true;
+        gameOver = true;
+      }
+    }
+
+    function updateWumpus() {
+      if (!player.won) {
+        if (player.x > 1750) {
+          wumpus.active = true;
+          wumpus.visible = true;
+        }
+      }
+
+      if (!wumpus.visible) return;
+
+      const targetX = player.x + player.w / 2;
+      const speed = 2.9;
+      const dir = targetX < wumpus.x + wumpus.w / 2 ? -1 : 1;
+      wumpus.vx = dir * speed;
+      wumpus.x += wumpus.vx;
+
+      wumpus.y = WORLD.groundY - wumpus.h;
+      wumpus.eyes += 0.14;
+
+      if (Math.abs(player.x - wumpus.x) < 110) {
+        wumpus.stareTimer += 1;
+      }
+
+      if (rectsIntersect(player, wumpus)) {
+        gameOver = true;
+        player.dead = true;
+        setStatus('SCREAMER');
+      }
+    }
+
+    function drawBackground() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      skyGrad.addColorStop(0, '#87ceeb');
+      skyGrad.addColorStop(0.5, '#d9f1ff');
+      skyGrad.addColorStop(1, '#a9d7ff');
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (const cloud of clouds) {
+        const x = (cloud.x - cameraX * 0.3) % (canvas.width + 200) - 120;
+        const y = cloud.y;
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.fillRect(x, y, cloud.w, 26);
+        ctx.fillRect(x + 16, y - 12, cloud.w - 30, 26);
+        ctx.fillRect(x + 30, y - 18, cloud.w - 52, 30);
+      }
+
+      ctx.fillStyle = '#80bf6c';
+      ctx.fillRect(0, WORLD.groundY + 30, canvas.width, canvas.height - (WORLD.groundY + 30));
+      ctx.fillStyle = '#3d6c4f';
+      for (let i = 0; i < 36; i++) {
+        const x = i * 34 - (cameraX * 0.65) % 34;
+        ctx.fillRect(x, WORLD.groundY + 42, 18, 24);
+      }
+    }
+
+    function drawPlatforms() {
+      for (const p of platforms) {
+        const x = p.x - cameraX;
+        const y = p.y;
+        const w = p.w;
+        const h = p.h;
+
+        ctx.fillStyle = p.type === 'ground' ? '#2a7a4f' : '#3d6d59';
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = 'rgba(0,0,0,0.16)';
+        ctx.fillRect(x, y + 9, w, 8);
+      }
+    }
+
+    function drawGoal() {
+      const x = goal.x - cameraX;
+      const y = goal.y;
+      ctx.fillStyle = '#c9d8dd';
+      ctx.fillRect(x, y, goal.w, goal.h);
+      ctx.fillStyle = '#7a8a96';
+      ctx.fillRect(x + 8, y + 10, 54, 92);
+      ctx.fillStyle = '#2d3b45';
+      ctx.fillRect(x + 18, y + 28, 34, 18);
+    }
+
+    function drawPlayer() {
+      const x = player.x - cameraX;
+      const y = player.y;
+
+      ctx.fillStyle = '#d4a52d';
+      ctx.fillRect(x + 8, y + 10, 10, 8);
+      ctx.fillStyle = '#f5d76e';
+      ctx.fillRect(x + 5, y + 16, 16, 12);
+      ctx.fillStyle = '#f0c55b';
+      ctx.fillRect(x + 2, y + 22, 22, 6);
+      ctx.fillStyle = '#3b2d1d';
+      ctx.fillRect(x + 6, y + 18, 4, 4);
+      ctx.fillRect(x + 16, y + 18, 4, 4);
+
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(x + 8, y + 20, 2, 2);
+      ctx.fillRect(x + 17, y + 20, 2, 2);
+
+      ctx.fillStyle = '#ad5d34';
+      ctx.fillRect(x + 2, y + 28, 6, 6);
+      ctx.fillRect(x + 18, y + 28, 6, 6);
+    }
+
+    function drawWumpus() {
+      if (!wumpus.visible) return;
+
+      const x = wumpus.x - cameraX;
+      const y = wumpus.y;
+
+      ctx.fillStyle = '#191b22';
+      ctx.fillRect(x + 6, y + 10, 42, 38);
+      ctx.fillStyle = '#2c2f36';
+      ctx.fillRect(x + 12, y + 2, 30, 12);
+
+      const eyeY = y + 18 + Math.sin(wumpus.eyes) * 2;
+      ctx.fillStyle = '#ff2a2a';
+      ctx.fillRect(x + 16, eyeY, 8, 8);
+      ctx.fillRect(x + 30, eyeY, 8, 8);
+      ctx.fillStyle = '#220000';
+      ctx.fillRect(x + 18, eyeY + 2, 4, 4);
+      ctx.fillRect(x + 32, eyeY + 2, 4, 4);
+
+      ctx.fillStyle = '#15181d';
+      ctx.fillRect(x + 20, y + 46, 8, 10);
+      ctx.fillRect(x + 26, y + 46, 8, 10);
+    }
+
+    function drawScreamer() {
+      if (!player.dead && !player.won) return;
+
+      const red = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2, 10, canvas.width / 2, canvas.height / 2, canvas.width * 0.9);
+      red.addColorStop(0, 'rgba(255,255,255,0.95)');
+      red.addColorStop(0.12, 'rgba(255, 80, 80, 0.85)');
+      red.addColorStop(0.45, 'rgba(170, 12, 12, 0.92)');
+      red.addColorStop(1, 'rgba(0,0,0,0.98)');
+      ctx.fillStyle = red;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.font = 'bold 54px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('WUMPUS', canvas.width / 2, canvas.height / 2 - 24);
+      ctx.font = 'bold 28px Arial';
+      ctx.fillText('SCREAMER', canvas.width / 2, canvas.height / 2 + 26);
+    }
+
+    function drawUI() {
+      if (gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    function updateCamera() {
+      const targetX = player.x - canvas.width * 0.45;
+      cameraX = clamp(targetX, 0, WORLD.width - canvas.width);
+    }
+
+    let cameraX = 0;
+
+    function update() {
+      if (!gameOver) {
+        updateMovement();
+        updatePlayer();
+        updateWumpus();
+        updateCamera();
+      }
+
+      if (player.won || player.dead) {
+        endTimer += 1;
+        if (endTimer > 150) {
+          setStatus('FIN');
+        }
+      }
+
+      timer += 1;
+    }
+
+    function render() {
+      drawBackground();
+      drawPlatforms();
+      drawGoal();
+      drawWumpus();
+      drawPlayer();
+      drawUI();
+      drawScreamer();
+    }
+
+    function loop() {
+      update();
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function handleKeyChange(code, isDown) {
+      if (code === 'KeyA' || code === 'ArrowLeft') keys.a = isDown;
+      if (code === 'KeyD' || code === 'ArrowRight') keys.d = isDown;
+      if (code === 'Space' || code === 'ArrowUp') keys.space = isDown;
+      if (code === 'KeyW') keys.space = isDown;
+    }
+
+    document.addEventListener('keydown', (e) => {
+      handleKeyChange(e.code, true);
+      if (['Space', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+    });
+    document.addEventListener('keyup', (e) => {
+      handleKeyChange(e.code, false);
+    });
+
+    mobileToggle.addEventListener('click', () => {
+      mobileMode = !mobileMode;
+      touchControls.classList.toggle('active', mobileMode);
+      mobileToggle.textContent = mobileMode ? 'PC' : 'MÓVIL';
+    });
+
+    function activateTouchControl(button, pressed) {
+      const key = button.dataset.key;
+      if (key === 'a') touchState.left = pressed;
+      if (key === 'd') touchState.right = pressed;
+      if (key === ' ') touchState.jump = pressed;
+    }
+
+    document.querySelectorAll('.touch-btn').forEach((button) => {
+      const press = (ev) => {
+        ev.preventDefault();
+        activateTouchControl(button, true);
+      };
+      const release = (ev) => {
+        ev.preventDefault();
+        activateTouchControl(button, false);
+      };
+      button.addEventListener('pointerdown', press);
+      button.addEventListener('pointerup', release);
+      button.addEventListener('pointerleave', release);
+      button.addEventListener('pointercancel', release);
+    });
+
+    setStatus('RUN');
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
